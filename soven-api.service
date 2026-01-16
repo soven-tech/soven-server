@@ -1,0 +1,21 @@
+[Unit]
+Description=Soven API Server
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=soven
+Group=soven
+WorkingDirectory=/home/soven/soven-api
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/soven/soven-api/venv/bin"
+ExecStart=/home/soven/soven-api/venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=append:/var/log/soven-api.log
+StandardError=append:/var/log/soven-api.log
+
+[Install]
+WantedBy=multi-user.target
