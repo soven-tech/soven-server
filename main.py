@@ -495,6 +495,14 @@ async def process_conversation(request: ConversationRequest):
         if conn:
             conn.close()
 
+@app.get("/api/audio/{filename}")
+def get_audio_file(filename: str):
+    """Serve generated TTS audio files"""
+    file_path = f"/tmp/{filename}"
+    if os.path.exists(file_path):
+        return FileResponse(file_path, media_type="audio/wav", filename=filename)
+    raise HTTPException(status_code=404, detail="Audio file not found")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
