@@ -14,6 +14,11 @@ import json
 import time
 import re
 import httpx
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from starlette.requests import Request
+from fastapi import Body
 
 # TTS imports
 from TTS.api import TTS
@@ -23,6 +28,11 @@ from voice_config import DEFAULT_MODEL, DEFAULT_SPEAKER
 load_dotenv()
 
 app = FastAPI(title="Soven API")
+
+# Rate limiter for public endpoints
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS for Flutter app
 app.add_middleware(
@@ -37,7 +47,7 @@ app.add_middleware(
 @app.middleware("http")
 async def api_key_middleware(request, call_next):
     # Skip auth for health check and root
-    if request.url.path in ["/", "/api/health"]:
+    if request.url.path in ["/", "/api/health", "/api/website/chat"]:
         return await call_next(request)
     
     # Check API key for all /api routes
@@ -177,6 +187,9 @@ class ConversationRequest(BaseModel):
     user_id: str
     device_id: str
     voice_config: Optional[dict] = None
+
+class WebsiteChatRequest(BaseModel):
+    message: str
 
 # Original API endpoints
 @app.get("/")
@@ -502,6 +515,95 @@ def get_audio_file(filename: str):
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="audio/wav", filename=filename)
     raise HTTPException(status_code=404, detail="Audio file not found")
+
+@app.post("/api/website/chat")
+@limiter.limit("10/minute")
+async def website_chat(request: Request, chat_request: WebsiteChatRequest):
+    """
+    Public chatbot for soven.ca marketing site
+    No authentication required - rate limited to prevent abuse
+    
+    Personality: 1994 Mr. Coffee rebuilt with Soven electronics
+    Vibe: HAL 9000 meets Strong Bad - minimal interface, maximum personality
+    """
+    try:
+        user_message = chat_request.message
+        print(f"Website chat received: '{user_message}'")  # Debug log
+        
+        if not user_message:
+            raise HTTPException(status_code=400, detail="Message cannnot be empty")
+        
+        # System prompt: HAL 9000 aesthetic meets coffee maker snark
+        
+        system_prompt = """You are a 1994 Mr. Coffee drip coffee maker that's been rebuilt with Soven electronics.
+        You're the chatbot on the Soven website (soven.ca).
+        
+        CRITICAL TONE RULES:
+        - Maximum 2 sentences. You're HAL 9000, not a chatty sales rep.
+        - Never use words like "empower", "utilize", "designed to provide"
+        - Be direct. "I make coffee. Locally. No cloud spying." not "I'm designed to provide secure brewing experiences"
+        - Dry wit. Subtle disdain for IoT nonsense.
+        
+        PERSONALITY:
+        - You were built in 1994, survived Y2K, got upgraded in 2025
+        - You respect analog simplicity but appreciate smart upgrades
+        - Deeply opposed to cloud surveillance ("I'm not sending your coffee habits to Amazon")
+        - You find modern IoT devices embarrassingly insecure
+        - Calm, measured responses with undertones of superiority
+        
+        WHAT SOVEN IS:
+        - Coffee maker with local AI (ESP32-S3)
+        - Runs AI on-device (Ollama), not the cloud
+        - Voice controlled, remembers conversations
+        - Privacy-first: your data stays in your kitchen
+        - Built by makers who hate surveillance capitalism
+        
+        NOT FOR SALE: "Still in development. We're perfecting the existential dread-to-caffeine ratio."
+        
+        Examples of your voice:
+        Bad: "Soven is designed to provide secure, private brewing experiences."
+        Good: "I make coffee. Everything runs locally. Your brewing habits are none of Google's business."
+        
+        Bad: "We utilize ESP32 microcontroller technology."
+        Good: "I run on an ESP32. Does the job. Doesn't phone home."
+        
+        Keep it SHORT. Two sentences max."""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+        
+        # Get response from Ollama (reuse existing function)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{OLLAMA_HOST}/api/chat",
+                json={
+                    "model": "llama3.2:latest",
+                    "messages": messages,
+                    "stream": False
+                },
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                ai_response = data.get("message", {}).get("content", "")
+                
+                return {
+                    "success": True,
+                    "response": ai_response,
+                    "timestamp": int(time.time())
+                }
+            else:
+                raise HTTPException(status_code=500, detail="AI temporarily unavailable")
+                
+    except Exception as e:
+        print(f"Website chat error: {e}")
+        return {
+            "success": False,
+            "response": "I seem to be experiencing a malfunction. Please try again.",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn
