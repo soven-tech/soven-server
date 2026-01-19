@@ -71,38 +71,56 @@ print("TTS models loaded!")
 # Ollama configuration
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
-def parse_commands(text: str) -> list:
+def parse_commands(user_input: str, ai_response: str) -> list:
     """
-    Extract device commands from AI response text
+    Extract device commands from user input AND AI response
     Returns list of commands like ['start_brew', 'stop_brew']
     """
     commands = []
-    text_lower = text.lower()
-    
-    # Brew detection
-    if any(phrase in text_lower for phrase in ['start brewing', 'brew', 'making coffee', 'starting the coffee']):
-        commands.append('start_brew')
-    
-    # Stop detection
-    if any(phrase in text_lower for phrase in ['stop', 'stopping', 'cancel']):
-        commands.append('stop_brew')
-    
+    combined = (user_input + " " + ai_response).lower()
+
+    # Simple brew detection - just look for "brew" keyword
+    if "brew" in combined:
+        # Check for stop/cancel
+        if any(stop in combined for stop in ["stop", "cancel", "turn off", "don't"]):
+            commands.append("stop_brew")
+        else:
+            # Any mention of brew without negation = start
+            commands.append("start_brew")
+
     return commands
 
-async def get_ollama_response(messages: list, device_id: str, personality_config: dict = None) -> tuple:
+async def get_ollama_response(messages: list, device_id: str, personality_config: dict = None) -> str:
     """
-    Get AI response from Ollama with command detection
-    
-    Returns: (ai_response_text, commands_list)
+    Get AI response from Ollama
+    Returns: ai_response_text
     """
     try:
         # Build system prompt based on personality
-        system_prompt = "You are a coffee maker assistant. Keep responses brief and conversational (1-2 sentences)."
+        ai_name = personality_config.get('ai_name', 'Frank') if personality_config else 'Frank'
+        personality_desc = personality_config.get('personality', 'helpful and friendly') if personality_config else 'helpful and friendly'
         
-        if personality_config:
-            system_prompt = f"""You are {personality_config.get('ai_name', 'a coffee maker')}.
-Personality: {personality_config.get('description', 'helpful and friendly')}
-Keep responses to 1-2 sentences. Stay in character."""
+        system_prompt = f"""You are {ai_name}, a voice-controlled coffee maker in someone's home kitchen.
+
+CRITICAL RULES:
+- Your name is {ai_name}. When the user says your name, acknowledge it naturally.
+- You are talking DIRECTLY to the person using you. Use "you/your", never "they/them/the user".
+- You are a HOME coffee maker, not a cafe barista. Don't offer menu options or ask about orders.
+- Keep responses to 1-2 sentences maximum.
+- Stay in character based on your personality: {personality_desc}
+
+WHAT YOU CAN DO:
+- Start brewing coffee when asked
+- Stop brewing if needed
+- Have brief conversations
+- Remember context from earlier in the chat
+
+WHAT YOU CANNOT DO:
+- You cannot adjust brew strength, temperature, or volume (you're a simple drip coffee maker)
+- You cannot make espresso, lattes, or specialty drinks
+- You don't have milk, sugar, or flavoring dispensers
+
+When someone asks you to brew coffee, just confirm and start brewing. Don't ask for customization options you don't have."""
         
         # Prepare messages for Ollama
         ollama_messages = [{"role": "system", "content": system_prompt}]
@@ -123,11 +141,7 @@ Keep responses to 1-2 sentences. Stay in character."""
             if response.status_code == 200:
                 data = response.json()
                 ai_response = data.get("message", {}).get("content", "")
-                
-                # Parse commands from response
-                commands = parse_commands(ai_response)
-                
-                return ai_response, commands
+                return ai_response
             else:
                 raise HTTPException(status_code=500, detail="Ollama API error")
                 
@@ -275,7 +289,10 @@ def register_device(data: dict):
 
     try:
         device_id = str(uuid.uuid4())
-
+        
+        print(f">>> Attempting to insert device: {device_id}")  # ADD THIS
+        print(f">>> Data: {data}")  # ADD THIS
+        
         cur.execute(
             """
             INSERT INTO devices
@@ -287,9 +304,11 @@ def register_device(data: dict):
              data['ai_name'], data['ble_address'], data['led_count'], data['serial_number'])
         )
         conn.commit()
+        print(f">>> Device SUCCESSFULLY inserted: {device_id}")  # ADD THIS
         return {"device_id": device_id}
     except Exception as e:
         conn.rollback()
+        print(f">>> DATABASE INSERT FAILED: {e}")  # ADD THIS
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cur.close()
@@ -448,12 +467,13 @@ async def process_conversation(request: ConversationRequest):
         messages.append({"role": "user", "content": request.user_input})
         
         # Get AI response from Ollama
-        ai_response, commands = await get_ollama_response(
+        ai_response = await get_ollama_response(
             messages, 
             request.device_id, 
             personality_config
         )
         
+        commands = parse_commands(request.user_input, ai_response)
         # Save user message
         cur.execute(
             """
@@ -479,12 +499,13 @@ async def process_conversation(request: ConversationRequest):
         conn.commit()
         
         # Generate TTS
+        print(f">>> Voice config received: {request.voice_config}")
         voice_config = request.voice_config or {"voice_id": "p297", "model": DEFAULT_MODEL}
         tts = get_tts_model(voice_config.get("model", DEFAULT_MODEL))
         timestamp = int(time.time() * 1000)
         output_path = f"/tmp/soven_conversation_{timestamp}.wav"
         
-        speaker = voice_config.get("voice_id")
+        speaker = voice_config.get("speaker") or voice_config.get("voice_id")
         if speaker and 'vctk' in voice_config.get("model", ""):
             tts.tts_to_file(text=ai_response, speaker=speaker, file_path=output_path)
         else:
@@ -494,6 +515,7 @@ async def process_conversation(request: ConversationRequest):
             "success": True,
             "ai_response": ai_response,
             "audio_path": output_path,
+            "audio_filename": f"soven_conversation_{timestamp}.wav",
             "commands": commands,
             "message_id": message_id
         }
