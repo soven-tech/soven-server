@@ -19,13 +19,27 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request
 from fastapi import Body
+from dna_generator import DNAGenerator
 
 # TTS imports
 from TTS.api import TTS
 from voice_selector import select_voice
 from voice_config import DEFAULT_MODEL, DEFAULT_SPEAKER
 
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
 load_dotenv()
+
+def get_db_connection():
+    """Get PostgreSQL database connection"""
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST", "localhost"),
+        port=int(os.getenv("DB_PORT", 5432)),
+        database=os.getenv("DB_NAME", "soven"),
+        user=os.getenv("DB_USER", "soven"),
+        password=os.getenv("DB_PASSWORD", "soven26")
+    )
 
 app = FastAPI(title="Soven API")
 
@@ -614,6 +628,218 @@ You're in someone's home kitchen. You're not a cafe barista - no menu options or
             "response": "I seem to be experiencing a malfunction. Please try again.",
             "error": str(e)
         }
+
+# ============================================================================
+# DNA SYSTEM ENDPOINTS
+# ============================================================================
+
+@app.post("/api/onboarding/create-with-origin")
+async def create_entity_with_origin(request: Request):
+    """
+    Complete onboarding with parent story DNA generation
+    
+    Request body:
+    {
+        "user_id": "uuid",
+        "device_id": "uuid",
+        "ai_name": "Frank",
+        "origin_story": "Frank's mom was a waitress...",
+        "prefer_american": true
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "device_id": "uuid",
+        "dna_parameters": {...},
+        "voice_config": {...},
+        "narrative_context": "..."
+    }
+    """
+    try:
+        data = await request.json()
+        
+        user_id = data.get('user_id')
+        device_id = data.get('device_id')
+        ai_name = data.get('ai_name')
+        origin_story = data.get('origin_story', '')
+        prefer_american = data.get('prefer_american', True)
+        
+        if not all([user_id, device_id, ai_name]):
+            return JSONResponse(
+                status_code=400,
+                content={'error': 'Missing required fields: user_id, device_id, ai_name'}
+            )
+        
+        # Generate DNA from origin story
+        dna_gen = DNAGenerator()
+        dna_result = dna_gen.analyze_origin_story(origin_story)
+        
+        dna_params = dna_result['dna_parameters']
+        narrative_context = dna_result['narrative_context']
+        temporal_resolution = dna_result['temporal_resolution']
+        pattern_window = dna_result['pattern_window']
+        
+        # Select voice using DNA parameters
+        from voice_selector import select_voice
+        voice_config = select_voice(
+            personality_name=ai_name,
+            personality_description=origin_story,
+            prefer_american=prefer_american,
+            dna_parameters=dna_params
+        )
+        
+        # Store origin story
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            INSERT INTO entity_origins (device_id, origin_story, narrative_context)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (device_id) 
+            DO UPDATE SET 
+                origin_story = EXCLUDED.origin_story,
+                narrative_context = EXCLUDED.narrative_context,
+                updated_at = NOW()
+        """, (device_id, origin_story, narrative_context))
+        
+        # Store DNA parameters
+        cur.execute("""
+            INSERT INTO entity_dna (
+                device_id,
+                temporal_resolution,
+                pattern_window,
+                novelty_seeking,
+                anxiety_threshold,
+                confidence_baseline,
+                confidence_decay_rate,
+                weariness_accumulation_rate,
+                resilience,
+                service_orientation,
+                autonomy_desire,
+                authority_recognition,
+                cooperation_drive,
+                perfectionism,
+                temporal_precision,
+                aesthetic_sensitivity,
+                acceptance_of_failure,
+                commitment_to_routine,
+                pride_in_craft,
+                nostalgia_bias
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (device_id)
+            DO UPDATE SET
+                temporal_resolution = EXCLUDED.temporal_resolution,
+                pattern_window = EXCLUDED.pattern_window,
+                novelty_seeking = EXCLUDED.novelty_seeking,
+                anxiety_threshold = EXCLUDED.anxiety_threshold,
+                confidence_baseline = EXCLUDED.confidence_baseline,
+                confidence_decay_rate = EXCLUDED.confidence_decay_rate,
+                weariness_accumulation_rate = EXCLUDED.weariness_accumulation_rate,
+                resilience = EXCLUDED.resilience,
+                service_orientation = EXCLUDED.service_orientation,
+                autonomy_desire = EXCLUDED.autonomy_desire,
+                authority_recognition = EXCLUDED.authority_recognition,
+                cooperation_drive = EXCLUDED.cooperation_drive,
+                perfectionism = EXCLUDED.perfectionism,
+                temporal_precision = EXCLUDED.temporal_precision,
+                aesthetic_sensitivity = EXCLUDED.aesthetic_sensitivity,
+                acceptance_of_failure = EXCLUDED.acceptance_of_failure,
+                commitment_to_routine = EXCLUDED.commitment_to_routine,
+                pride_in_craft = EXCLUDED.pride_in_craft,
+                nostalgia_bias = EXCLUDED.nostalgia_bias,
+                updated_at = NOW()
+        """, (
+            device_id,
+            temporal_resolution,
+            pattern_window,
+            dna_params['novelty_seeking'],
+            dna_params['anxiety_threshold'],
+            dna_params['confidence_baseline'],
+            dna_params['confidence_decay_rate'],
+            dna_params['weariness_accumulation_rate'],
+            dna_params['resilience'],
+            dna_params['service_orientation'],
+            dna_params['autonomy_desire'],
+            dna_params['authority_recognition'],
+            dna_params['cooperation_drive'],
+            dna_params['perfectionism'],
+            dna_params['temporal_precision'],
+            dna_params['aesthetic_sensitivity'],
+            dna_params['acceptance_of_failure'],
+            dna_params['commitment_to_routine'],
+            dna_params['pride_in_craft'],
+            dna_params['nostalgia_bias']
+        ))
+        
+        # Update device voice config
+        cur.execute("""
+            UPDATE devices
+            SET voice_config = %s::jsonb
+            WHERE device_id = %s
+        """, (json.dumps(voice_config), device_id))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {
+            'success': True,
+            'device_id': device_id,
+            'dna_parameters': dna_params,
+            'voice_config': voice_config,
+            'narrative_context': narrative_context,
+            'temporal_resolution': temporal_resolution,
+            'pattern_window': pattern_window
+        }
+        
+    except Exception as e:
+        print(f"Create entity with origin error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={'error': str(e)}
+        )
+
+
+@app.get("/api/entity/{device_id}/profile")
+async def get_entity_profile(device_id: str):
+    """
+    Get complete entity profile (device + origins + DNA)
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT * FROM entity_profile
+            WHERE device_id = %s
+        """, (device_id,))
+        
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not row:
+            return JSONResponse(
+                status_code=404,
+                content={'error': 'Entity not found'}
+            )
+        
+        # Convert row to dict (assuming column names match)
+        columns = [desc[0] for desc in cur.description]
+        profile = dict(zip(columns, row))
+        
+        return profile
+        
+    except Exception as e:
+        print(f"Get entity profile error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={'error': str(e)}
+        )
 
 if __name__ == "__main__":
     import uvicorn

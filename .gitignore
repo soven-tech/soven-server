@@ -33,3 +33,5 @@ Thumbs.db
 # Database
 *.db
 *.sqlite
+*.backup*
+__pycache__/
