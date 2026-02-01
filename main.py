@@ -20,6 +20,9 @@ from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request
 from fastapi import Body
 from dna_generator import DNAGenerator
+from fastapi import WebSocket
+from audio_websocket import DeviceAudioSession
+import psycopg2
 
 # TTS imports
 from TTS.api import TTS
@@ -840,6 +843,29 @@ async def get_entity_profile(device_id: str):
             status_code=500,
             content={'error': str(e)}
         )
+
+@app.websocket("/ws/audio")
+async def audio_websocket(websocket: WebSocket):
+    """
+    WebSocket endpoint for Tier 1 device audio streaming
+    
+    Usage: wss://api.soven.ca/ws/audio?device_id=coffee_001
+    """
+
+    # Get database connection
+    conn = get_db_connection()
+    
+    try:
+        # Extract device_id from query params if not provided
+        device_id = websocket.query_params.get('device_id', 'unknown')
+        
+        session = DeviceAudioSession(websocket, device_id, conn)
+        await session.handle_session()
+        
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}", exc_info=True)
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     import uvicorn
