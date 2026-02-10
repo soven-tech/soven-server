@@ -23,6 +23,7 @@ from dna_generator import DNAGenerator
 from fastapi import WebSocket
 from audio_websocket import DeviceAudioSession
 import psycopg2
+from typing import Optional
 
 # TTS imports
 from TTS.api import TTS
@@ -222,6 +223,9 @@ class ConversationRequest(BaseModel):
 
 class WebsiteChatRequest(BaseModel):
     message: str
+
+class CastRequest(BaseModel):
+    serial_number: str
 
 # Original API endpoints
 @app.get("/")
@@ -638,174 +642,114 @@ You're in someone's home kitchen. You're not a cafe barista - no menu options or
 
 @app.post("/api/onboarding/create-with-origin")
 async def create_entity_with_origin(request: Request):
-    """
-    Complete onboarding with parent story DNA generation
-    
-    Request body:
-    {
-        "user_id": "uuid",
-        "device_id": "uuid",
-        "ai_name": "Frank",
-        "origin_story": "Frank's mom was a waitress...",
-        "prefer_american": true
-    }
-    
-    Returns:
-    {
-        "success": true,
-        "device_id": "uuid",
-        "dna_parameters": {...},
-        "voice_config": {...},
-        "narrative_context": "..."
-    }
-    """
+    """Create new AI personality (server-first flow)"""
     try:
         data = await request.json()
-        
         user_id = data.get('user_id')
-        device_id = data.get('device_id')
         ai_name = data.get('ai_name')
         origin_story = data.get('origin_story', '')
         prefer_american = data.get('prefer_american', True)
         
-        if not all([user_id, device_id, ai_name]):
+        if not user_id or not ai_name:
             return JSONResponse(
                 status_code=400,
-                content={'error': 'Missing required fields: user_id, device_id, ai_name'}
+                content={"error": "Missing required fields: user_id, ai_name"}
             )
         
-        # Generate DNA from origin story
+        device_id = str(uuid.uuid4())
+        print(f"[Onboarding] Creating AI: {ai_name}")
+        
+        # Generate DNA using the actual method
         dna_gen = DNAGenerator()
         dna_result = dna_gen.analyze_origin_story(origin_story)
         
-        dna_params = dna_result['dna_parameters']
-        narrative_context = dna_result['narrative_context']
-        temporal_resolution = dna_result['temporal_resolution']
-        pattern_window = dna_result['pattern_window']
+        dna_params = dna_result.get('dna_parameters', {})
+        narrative_context = dna_result.get('narrative_context', f"AI based on: {origin_story}")
         
-        # Select voice using DNA parameters
-        from voice_selector import select_voice
-        voice_config = select_voice(
-            personality_name=ai_name,
-            personality_description=origin_story,
-            prefer_american=prefer_american,
-            dna_parameters=dna_params
-        )
+        # Use existing voice selector
+        voice_config = select_voice(ai_name, origin_story, prefer_american)
         
-        # Store origin story
         conn = get_db_connection()
         cur = conn.cursor()
         
-        cur.execute("""
-            INSERT INTO entity_origins (device_id, origin_story, narrative_context)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (device_id) 
-            DO UPDATE SET 
-                origin_story = EXCLUDED.origin_story,
-                narrative_context = EXCLUDED.narrative_context,
-                updated_at = NOW()
-        """, (device_id, origin_story, narrative_context))
-        
-        # Store DNA parameters
-        cur.execute("""
-            INSERT INTO entity_dna (
+        try:
+            cur.execute("""
+                INSERT INTO devices (
+                    device_id, user_id, device_type, device_name, ai_name,
+                    personality_config, voice_config, 
+                    first_boot_complete, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            """, (
+                device_id, user_id, 'coffee_maker', ai_name, ai_name,
+                json.dumps({"personality": origin_story}),
+                json.dumps(voice_config), False
+            ))
+            
+            cur.execute("""
+                INSERT INTO entity_origins (device_id, origin_story, narrative_context)
+                VALUES (%s, %s, %s)
+            """, (device_id, origin_story, narrative_context))
+            
+            cur.execute("""
+                INSERT INTO entity_dna (
+                    device_id, temporal_resolution, pattern_window, novelty_seeking,
+                    anxiety_threshold, confidence_baseline, confidence_decay_rate,
+                    weariness_accumulation_rate, resilience, service_orientation, 
+                    autonomy_desire, authority_recognition, cooperation_drive,
+                    perfectionism, temporal_precision, aesthetic_sensitivity,
+                    acceptance_of_failure, commitment_to_routine, 
+                    pride_in_craft, nostalgia_bias, generation, dna_version
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
                 device_id,
-                temporal_resolution,
-                pattern_window,
-                novelty_seeking,
-                anxiety_threshold,
-                confidence_baseline,
-                confidence_decay_rate,
-                weariness_accumulation_rate,
-                resilience,
-                service_orientation,
-                autonomy_desire,
-                authority_recognition,
-                cooperation_drive,
-                perfectionism,
-                temporal_precision,
-                aesthetic_sensitivity,
-                acceptance_of_failure,
-                commitment_to_routine,
-                pride_in_craft,
-                nostalgia_bias
-            )
-            VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-            )
-            ON CONFLICT (device_id)
-            DO UPDATE SET
-                temporal_resolution = EXCLUDED.temporal_resolution,
-                pattern_window = EXCLUDED.pattern_window,
-                novelty_seeking = EXCLUDED.novelty_seeking,
-                anxiety_threshold = EXCLUDED.anxiety_threshold,
-                confidence_baseline = EXCLUDED.confidence_baseline,
-                confidence_decay_rate = EXCLUDED.confidence_decay_rate,
-                weariness_accumulation_rate = EXCLUDED.weariness_accumulation_rate,
-                resilience = EXCLUDED.resilience,
-                service_orientation = EXCLUDED.service_orientation,
-                autonomy_desire = EXCLUDED.autonomy_desire,
-                authority_recognition = EXCLUDED.authority_recognition,
-                cooperation_drive = EXCLUDED.cooperation_drive,
-                perfectionism = EXCLUDED.perfectionism,
-                temporal_precision = EXCLUDED.temporal_precision,
-                aesthetic_sensitivity = EXCLUDED.aesthetic_sensitivity,
-                acceptance_of_failure = EXCLUDED.acceptance_of_failure,
-                commitment_to_routine = EXCLUDED.commitment_to_routine,
-                pride_in_craft = EXCLUDED.pride_in_craft,
-                nostalgia_bias = EXCLUDED.nostalgia_bias,
-                updated_at = NOW()
-        """, (
-            device_id,
-            temporal_resolution,
-            pattern_window,
-            dna_params['novelty_seeking'],
-            dna_params['anxiety_threshold'],
-            dna_params['confidence_baseline'],
-            dna_params['confidence_decay_rate'],
-            dna_params['weariness_accumulation_rate'],
-            dna_params['resilience'],
-            dna_params['service_orientation'],
-            dna_params['autonomy_desire'],
-            dna_params['authority_recognition'],
-            dna_params['cooperation_drive'],
-            dna_params['perfectionism'],
-            dna_params['temporal_precision'],
-            dna_params['aesthetic_sensitivity'],
-            dna_params['acceptance_of_failure'],
-            dna_params['commitment_to_routine'],
-            dna_params['pride_in_craft'],
-            dna_params['nostalgia_bias']
-        ))
-        
-        # Update device voice config
-        cur.execute("""
-            UPDATE devices
-            SET voice_config = %s::jsonb
-            WHERE device_id = %s
-        """, (json.dumps(voice_config), device_id))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        return {
-            'success': True,
-            'device_id': device_id,
-            'dna_parameters': dna_params,
-            'voice_config': voice_config,
-            'narrative_context': narrative_context,
-            'temporal_resolution': temporal_resolution,
-            'pattern_window': pattern_window
-        }
-        
+                dna_params.get('temporal_resolution', 'medium'),
+                dna_params.get('pattern_window', 'medium'),
+                dna_params.get('novelty_seeking', 0.5),
+                dna_params.get('anxiety_threshold', 0.5),
+                dna_params.get('confidence_baseline', 0.5),
+                dna_params.get('confidence_decay_rate', 0.5),
+                dna_params.get('weariness_accumulation_rate', 0.5),
+                dna_params.get('resilience', 0.5),
+                dna_params.get('service_orientation', 0.5),
+                dna_params.get('autonomy_desire', 0.5),
+                dna_params.get('authority_recognition', 0.5),
+                dna_params.get('cooperation_drive', 0.5),
+                dna_params.get('perfectionism', 0.5),
+                dna_params.get('temporal_precision', 0.5),
+                dna_params.get('aesthetic_sensitivity', 0.5),
+                dna_params.get('acceptance_of_failure', 0.5),
+                dna_params.get('commitment_to_routine', 0.5),
+                dna_params.get('pride_in_craft', 0.5),
+                dna_params.get('nostalgia_bias', 0.5),
+                0, '1.0'
+            ))
+            
+            conn.commit()
+            print(f"[Onboarding] ✓ AI created: {ai_name}")
+            
+            return {
+                "success": True,
+                "device_id": device_id,
+                "dna_params": dna_params,
+                "voice_config": voice_config,
+                "narrative_context": narrative_context
+            }
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"[Onboarding] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        finally:
+            cur.close()
+            conn.close()
+            
     except Exception as e:
-        print(f"Create entity with origin error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={'error': str(e)}
-        )
-
+        print(f"[Onboarding] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/api/entity/{device_id}/profile")
 async def get_entity_profile(device_id: str):
@@ -843,6 +787,301 @@ async def get_entity_profile(device_id: str):
             status_code=500,
             content={'error': str(e)}
         )
+
+@app.get("/api/users/{user_id}/personalities")
+def get_user_personalities(user_id: str):
+    """
+    List all AI personalities for a user
+    Returns personalities with cast status
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    try:
+        # Get all devices/personalities for user with DNA
+        cur.execute("""
+            SELECT 
+                d.device_id,
+                d.user_id,
+                d.ai_name,
+                d.device_type,
+                d.device_name,
+                d.serial_number as cast_to_serial,
+                d.voice_config,
+                d.personality_config,
+                d.created_at,
+                eo.origin_story,
+                eo.narrative_context,
+                ed.anxiety_threshold,
+                ed.service_orientation,
+                ed.resilience,
+                ed.novelty_seeking,
+                ed.temporal_resolution,
+                ed.pattern_window,
+                ed.confidence_baseline,
+                ed.weariness_accumulation_rate
+            FROM devices d
+            LEFT JOIN entity_origins eo ON d.device_id = eo.device_id
+            LEFT JOIN entity_dna ed ON d.device_id = ed.device_id
+            WHERE d.user_id = %s
+            ORDER BY d.created_at DESC
+        """, (user_id,))
+        
+        rows = cur.fetchall()
+        personalities = []
+        
+        for row in rows:
+            # Build dna_params from DNA columns
+            dna_params = {}
+            if row[11] is not None:  # anxiety_threshold exists
+                dna_params = {
+                    "anxiety_threshold": row[11],
+                    "service_orientation": row[12],
+                    "resilience": row[13],
+                    "novelty_seeking": row[14],
+                    "temporal_resolution": row[15],
+                    "pattern_window": row[16],
+                    "confidence_baseline": row[17] if len(row) > 17 else 0.5,
+                    "weariness_accumulation_rate": row[18] if len(row) > 18 else 0.5,
+                }
+            
+            personalities.append({
+                "device_id": str(row[0]),
+                "user_id": str(row[1]),
+                "ai_name": row[2],
+                "device_type": row[3],
+                "origin_story": row[9] or "",
+                "dna_params": dna_params,
+                "voice_config": row[6] or {},
+                "created_at": row[8].isoformat() if row[8] else None,
+                "cast_to_serial": row[5],
+                "device_online": False,  # Track via WebSocket connections
+            })
+        
+        return {"personalities": personalities}
+        
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/devices/{device_id}/personality")
+def get_personality(device_id: str):
+    """
+    Get single AI personality by device_id
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    try:
+        cur.execute("""
+            SELECT 
+                d.device_id,
+                d.user_id,
+                d.ai_name,
+                d.device_type,
+                d.device_name,
+                d.serial_number as cast_to_serial,
+                d.voice_config,
+                d.personality_config,
+                d.created_at,
+                eo.origin_story,
+                eo.narrative_context,
+                ed.anxiety_threshold,
+                ed.service_orientation,
+                ed.resilience
+            FROM devices d
+            LEFT JOIN entity_origins eo ON d.device_id = eo.device_id
+            LEFT JOIN entity_dna ed ON d.device_id = ed.device_id
+            WHERE d.device_id = %s
+        """, (device_id,))
+        
+        row = cur.fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Personality not found")
+        
+        # Build dna_params
+        dna_params = {}
+        if row[11] is not None:
+            dna_params = {
+                "anxiety_threshold": row[11],
+                "service_orientation": row[12],
+                "resilience": row[13],
+            }
+        
+        return {
+            "device_id": str(row[0]),
+            "user_id": str(row[1]),
+            "ai_name": row[2],
+            "device_type": row[3],
+            "origin_story": row[9] or "",
+            "dna_params": dna_params,
+            "voice_config": row[6] or {},
+            "created_at": row[8].isoformat() if row[8] else None,
+            "cast_to_serial": row[5],
+            "device_online": False,
+        }
+        
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.post("/api/devices/{device_id}/cast")
+def cast_to_device(device_id: str, request: CastRequest):
+    """
+    Cast AI personality to a physical device by serial number
+    Links the AI (device_id) to the hardware (serial_number)
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    try:
+        # Verify device exists
+        cur.execute("SELECT device_id FROM devices WHERE device_id = %s", (device_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Personality not found")
+        
+        # Check if serial is already in use
+        cur.execute(
+            "SELECT device_id, ai_name FROM devices WHERE serial_number = %s",
+            (request.serial_number,)
+        )
+        existing = cur.fetchone()
+        
+        if existing and str(existing[0]) != device_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Serial {request.serial_number} already cast to {existing[1]}"
+            )
+        
+        # Update device with serial number
+        cur.execute(
+            """
+            UPDATE devices 
+            SET serial_number = %s, 
+                updated_at = NOW()
+            WHERE device_id = %s
+            """,
+            (request.serial_number, device_id)
+        )
+        
+        conn.commit()
+        
+        return {
+            "status": "cast_successful",
+            "device_id": device_id,
+            "serial_number": request.serial_number
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.post("/api/devices/{device_id}/uncast")
+def uncast_from_device(device_id: str):
+    """
+    Remove AI personality from physical device
+    Sets serial_number back to NULL
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    try:
+        cur.execute(
+            """
+            UPDATE devices 
+            SET serial_number = NULL,
+                updated_at = NOW()
+            WHERE device_id = %s
+            """,
+            (device_id,)
+        )
+        
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Personality not found")
+        
+        conn.commit()
+        
+        return {
+            "status": "uncast_successful",
+            "device_id": device_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+@app.post("/api/users/register")
+def register_user(data: dict):
+    """
+    Register a new user (called on app first launch)
+    Request: {"name": "User"}
+    Returns: {"user_id": "uuid", "name": "User"}
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    try:
+        user_name = data.get('name', 'User')
+        
+        cur.execute("""
+            INSERT INTO users (name, created_at)
+            VALUES (%s, NOW())
+            RETURNING user_id, name
+        """, (user_name,))
+        
+        result = cur.fetchone()
+        conn.commit()
+        
+        return {
+            "user_id": str(result[0]),
+            "name": result[1]
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+@app.get("/firmware/{device_type}/manifest.json")
+def get_firmware_manifest(device_type: str):
+    """Get firmware manifest for device type"""
+    manifest_path = f"firmware_releases/{device_type}/manifest.json"
+    
+    if not os.path.exists(manifest_path):
+        raise HTTPException(status_code=404, detail="No firmware available")
+    
+    return FileResponse(manifest_path, media_type="application/json")
+
+@app.get("/firmware/{device_type}/{version}.bin")
+def download_firmware(device_type: str, version: str):
+    """Download firmware binary"""
+    version = version.replace("..", "").replace("/", "")  # Security
+    bin_path = f"firmware_releases/{device_type}/{version}.bin"
+    
+    if not os.path.exists(bin_path):
+        raise HTTPException(status_code=404, detail="Firmware not found")
+    
+    return FileResponse(
+        bin_path,
+        media_type="application/octet-stream",
+        filename=f"{device_type}_{version}.bin"
+    )
 
 @app.websocket("/ws/audio")
 async def audio_websocket(websocket: WebSocket):

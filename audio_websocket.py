@@ -67,14 +67,15 @@ class DeviceAudioSession:
         cursor = self.db.cursor()
         cursor.execute("""
             SELECT 
-                ai_name, 
-                voice_config, 
-                narrative_context,
-                anxiety_threshold,
-                service_orientation,
-                resilience
-            FROM entity_profile
-            WHERE device_id = %s
+                d.ai_name,
+                dna.anxiety_threshold,
+                dna.service_orientation,
+                dna.resilience,
+                eo.narrative_context
+            FROM devices d
+            LEFT JOIN entity_dna dna ON d.device_id = dna.device_id
+            LEFT JOIN entity_origins eo ON d.device_id = eo.device_id
+            WHERE d.device_id = %s
         """, (self.device_id,))
         
         row = cursor.fetchone()
@@ -82,15 +83,17 @@ class DeviceAudioSession:
         
         if row:
             self.ai_name = row[0]
-            self.voice_config = row[1] if row[1] else {}
-            self.narrative_context = row[2]
+            self.narrative_context = row[4]
             
-            # Build DNA parameters dict from individual columns
+            # Build DNA parameters dict
             self.dna_parameters = {
-            'anxiety_threshold': row[3],
-            'service_orientation': row[4],
-            'resilience': row[5]
+                'anxiety_threshold': row[1],
+                'service_orientation': row[2],
+                'resilience': row[3]
             }
+            
+            # Voice config from devices table
+            self.voice_config = {} #TODO: get from personality download endpoint
             
             logger.info(f"[WS] Loaded profile for {self.ai_name}")
         else:
